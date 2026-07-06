@@ -1,0 +1,189 @@
+version: '3.8'
+
+services:
+  # ==========================================
+  # PostgreSQL Database
+  # ==========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: gameworld-postgres
+    environment:
+      POSTGRES_USER: ${DB_USERNAME:-gameworld_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-gameworld_password}
+      POSTGRES_DB: ${DB_DATABASE:-gameworld_db}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8"
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init-db.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USERNAME:-gameworld_user}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+
+  # ==========================================
+  # Redis Cache
+  # ==========================================
+  redis:
+    image: redis:7-alpine
+    container_name: gameworld-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+
+  # ==========================================
+  # Node.js Backend API
+  # ==========================================
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+      args:
+        NODE_ENV: development
+    container_name: gameworld-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      APP_PORT: ${APP_PORT:-3000}
+      APP_HOST: 0.0.0.0
+      
+      # Database
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USERNAME: ${DB_USERNAME:-gameworld_user}
+      DB_PASSWORD: ${DB_PASSWORD:-gameworld_password}
+      DB_DATABASE: ${DB_DATABASE:-gameworld_db}
+      
+      # Redis
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_PASSWORD: ${REDIS_PASSWORD:-redis_password}
+      
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-your_super_secret_jwt_key_change_this}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-your_super_secret_refresh_key}
+      
+      # Stripe
+      STRIPE_PUBLIC_KEY: ${STRIPE_PUBLIC_KEY:-pk_test_dummy}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:-sk_test_dummy}
+      
+      # AWS S3
+      AWS_REGION: ${AWS_REGION:-eu-west-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_S3_BUCKET: ${AWS_S3_BUCKET:-gameworld-storage}
+      
+      # CORS
+      CORS_ORIGIN: ${CORS_ORIGIN:-http://localhost:3001}
+      
+      # Logging
+      LOG_LEVEL: ${LOG_LEVEL:-debug}
+    ports:
+      - "${APP_PORT:-3000}:3000"
+    volumes:
+      - ./backend/src:/app/src
+      - /app/node_modules
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+    command: npm run dev
+
+  # ==========================================
+  # pgAdmin - PostgreSQL Management UI
+  # ==========================================
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: gameworld-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${ADMIN_EMAIL:-admin@gameworld.io}
+      PGADMIN_DEFAULT_PASSWORD: ${ADMIN_PASSWORD:-admin_password}
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+    depends_on:
+      - postgres
+
+  # ==========================================
+  # Redis Commander - Redis Management UI
+  # ==========================================
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    container_name: gameworld-redis-commander
+    environment:
+      REDIS_HOSTS: local:redis:6379:0:${REDIS_PASSWORD:-redis_password}
+    ports:
+      - "8081:8081"
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+    depends_on:
+      - redis
+
+  # ==========================================
+  # React Frontend (Optional for development)
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: gameworld-frontend
+    environment:
+      REACT_APP_API_URL: http://localhost:3000
+      REACT_APP_WS_URL: ws://localhost:3000
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./frontend/src:/app/src
+      - /app/node_modules
+    networks:
+      - gameworld-network
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+# ==========================================
+# Volumes
+# ==========================================
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  pgadmin_data:
+    driver: local
+
+# ==========================================
+# Networks
+# ==========================================
+networks:
+  gameworld-network:
+    driver: bridge
